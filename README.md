@@ -17,7 +17,7 @@ It utilizes a localized Convolutional Neural Network (CNN) to visually diagnose 
 
 ## 🔗 Dataset & Pre-trained Model
 * **Dataset:** [PlantVillage Dataset (Kaggle)](https://www.kaggle.com/datasets/abdallahalidev/plantvillage-dataset) - Features 54,305 high-resolution images across 38 distinct crop/disease classes.
-* **Trained CNN Model (.h5):** [Download the Optimized Model Here](https://drive.google.com/file/d/1rKh-IElSdHTqax7XdfSdZTn-r8T_qWPf/view?usp=drive_link) 
+* **Trained CNN Model (.h5):** [Download the Optimized Model Here](https://drive.google.com/file/d/1OTql7BlDWAeyRXr5UAk3UUxpCnwBacA4/view?usp=sharing) 
   * *(Note: Place this `.h5` file inside the `app/trained_model/` directory before running the application).*
 
 ---
