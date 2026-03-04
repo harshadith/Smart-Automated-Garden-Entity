@@ -4,15 +4,15 @@ import numpy as np
 import tensorflow as tf
 import streamlit as st
 from PIL import Image
-import google.generativeai as genai
+try:
+    import google.generativeai as genai
+except ModuleNotFoundError:
+    genai = None
 import time
 import base64
 import io
 from groq import Groq
 import requests
-
-# Put the IP address you got from the NodeMCU Serial Monitor here
-NODEMCU_IP = "10.182.173.173"
 
 # --- 1. SETUP & CONFIGURATION ---
 st.set_page_config(
@@ -24,12 +24,23 @@ st.set_page_config(
 # --- LIVE TELEMETRY DASHBOARD ---
 st.sidebar.header("📡 Live S.A.G.E. Telemetry")
 
+# Allow dynamic IP input in the sidebar (defaults to localhost if empty, to prevent crashes)
+nodemcu_ip_input = st.sidebar.text_input(
+    "NodeMCU IP Address", 
+    value="", 
+    placeholder="e.g., 192.168.1.10"
+)
+
 # --- 5. DATA FETCHING ---
-def get_arduino_data():
+def get_arduino_data(ip_address):
     """
-    Fetches live JSON data wirelessly from the NodeMCU web server.
+    Fetches live JSON data wirelessly from the NodeMCU web server using the provided IP.
     """
-    url = f"http://{NODEMCU_IP}/data"
+    if not ip_address:
+        st.sidebar.warning("Please enter a NodeMCU IP address above.")
+        return None
+
+    url = f"http://{ip_address}/data"
     
     try:
         # Send an HTTP GET request to the NodeMCU
@@ -41,18 +52,19 @@ def get_arduino_data():
         else:
             return None
     except requests.exceptions.RequestException:
-        # This catches errors if the NodeMCU is turned off or disconnected
+        # This catches errors if the NodeMCU is turned off, wrong IP, or disconnected
         st.sidebar.error("Wireless Connection Failed. Assuming standard indoor conditions.")
         return None
-    
+
 # Add a button to manually refresh the live data
 if st.sidebar.button("🔄 Refresh Sensors", use_container_width=True):
     with st.spinner("Connecting to S.A.G.E. Node..."):
-        live_data = get_arduino_data()
+        # Pass the dynamic IP input to the function
+        live_data = get_arduino_data(nodemcu_ip_input)
         
     if live_data:
         # Update the global sensor_data variable so the AI can use it later
-        sensor_data = live_data 
+        st.session_state['sensor_data'] = live_data 
         
         # Display beautiful metrics in the sidebar
         st.sidebar.success("Connection Established!")
@@ -61,7 +73,11 @@ if st.sidebar.button("🔄 Refresh Sensors", use_container_width=True):
         st.sidebar.metric(label="🌱 Soil Moisture", value=f"{live_data.get('soil', 'N/A')} %")
         st.sidebar.metric(label="☀️ Light Level", value=f"{live_data.get('light', 'N/A')}")
     else:
-        st.sidebar.error("NodeMCU Offline.")
+        st.sidebar.error("NodeMCU Offline or Invalid IP.")
+
+# Initialize the sensor data in Streamlit's session state if it doesn't exist yet
+if 'sensor_data' not in st.session_state:
+    st.session_state['sensor_data'] = None
 
 working_dir = os.path.dirname(os.path.abspath(__file__))
 model_path = f"{working_dir}/trained_model/plant_disease_prediction_model.h5"
@@ -74,7 +90,7 @@ if not api_key:
     # If not found, allow manual entry in sidebar for testing
     api_key = st.sidebar.text_input("Enter Google API Key", type="password")
 
-if api_key:
+if api_key and genai is not None:
     genai.configure(api_key=api_key)
 
 # --- 3. LOAD MODEL & CLASSES ---
@@ -117,18 +133,14 @@ def predict_image_class(model, image_file, class_indices):
     confidence = np.max(predictions)
     return predicted_class_name, confidence
 
-
 # --- 6. GEMINI + GROQ FALLBACK AI ADVICE (THE ARBITER) ---
 def get_expert_advice(disease_name, confidence, image_file, sensors):
     """
     Tries Gemini first. If it hits a rate limit (429), it instantly 
-    converts the image and sends it to Groq (Llama 3.2 Vision) as a fallback.
+    converts the image and sends it to Groq (Llama 4 Vision) as a fallback.
     """
     google_key = st.secrets.get("GOOGLE_API_KEY")
     groq_key = st.secrets.get("GROQ_API_KEY")
-
-    if not google_key:
-        return "⚠️ Please provide a Google API Key in secrets.toml."
 
     # 1. Format Sensor Context
     if sensors:
@@ -170,64 +182,67 @@ def get_expert_advice(disease_name, confidence, image_file, sensors):
     # ==========================================
     # ATTEMPT 1: GOOGLE GEMINI
     # ==========================================
-    try:
-        model_gemini = genai.GenerativeModel('gemini-2.0-flash-lite')
-        response = model_gemini.generate_content([prompt, img])
-        return response.text
-        
-    except Exception as gemini_error:
-        # If Gemini fails (e.g., 429 Rate Limit), trigger Groq
-        
-        if not groq_key:
-            return f"⚠️ **Gemini Error:** {gemini_error}\n\n*(No Groq API key found to trigger fallback.)*"
-
-        # ==========================================
-        # ATTEMPT 2: GROQ FALLBACK (Llama 3.2 Vision)
-        # ==========================================
+    gemini_error = None
+    if genai is not None and google_key:
         try:
-            client = Groq(api_key=groq_key)
-            
-            # Groq requires the image to be Base64 encoded
-            buffered = io.BytesIO()
-            if img.mode != 'RGB':
-                img = img.convert('RGB') # Fix for PNGs with transparency
-            img.save(buffered, format="JPEG")
-            img_b64 = base64.b64encode(buffered.getvalue()).decode()
+            model_gemini = genai.GenerativeModel('gemini-2.0-flash-lite')
+            response = model_gemini.generate_content([prompt, img])
+            return response.text
+        except Exception as error:
+            gemini_error = error
+    else:
+        if genai is None:
+            gemini_error = "google-generativeai is not available in the active Python interpreter."
+        elif not google_key:
+            gemini_error = "GOOGLE_API_KEY is missing."
 
-            # Call Groq API
-            chat_completion = client.chat.completions.create(
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": prompt},
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/jpeg;base64,{img_b64}",
-                                },
+    if not groq_key:
+        return f"⚠️ **Gemini unavailable:** {gemini_error}\n\n*(No Groq API key found to trigger fallback.)*"
+
+    # ==========================================
+    # ATTEMPT 2: GROQ FALLBACK (Llama 4 Vision)
+    # ==========================================
+    try:
+        client = Groq(api_key=groq_key)
+        
+        # Groq requires the image to be Base64 encoded
+        buffered = io.BytesIO()
+        if img.mode != 'RGB':
+            img = img.convert('RGB') # Fix for PNGs with transparency
+        img.save(buffered, format="JPEG")
+        img_b64 = base64.b64encode(buffered.getvalue()).decode()
+
+        # Call Groq API
+        chat_completion = client.chat.completions.create(
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{img_b64}",
                             },
-                        ],
-                    }
-                ],
-                model="meta-llama/llama-4-scout-17b-16e-instruct",
-                temperature=0.2, # Low temperature for factual medical advice
-            )
-            
-            groq_response = chat_completion.choices[0].message.content
-            if groq_response:
-                return groq_response + "\n\n--- \n*⚡ S.A.G.E. Fallback Engaged: Report generated via Groq (Llama 3.2 Vision) due to Gemini network traffic.*"
-            else:
-                return "⚠️ **Groq returned empty response.**"
-            
-        except Exception as groq_error:
-             return f"⚠️ **Total System Failure.**\nGemini Error: {gemini_error}\nGroq Error: {groq_error}"
+                        },
+                    ],
+                }
+            ],
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            temperature=0.2, # Low temperature for factual medical advice
+        )
+        
+        groq_response = chat_completion.choices[0].message.content
+        if groq_response:
+            return groq_response + "\n\n--- \n*⚡ S.A.G.E. Fallback Engaged: Report generated via Groq (Llama 4 Vision) because Gemini was unavailable.*"
+        else:
+            return "⚠️ **Groq returned empty response.**"
+        
+    except Exception as groq_error:
+            return f"⚠️ **Total System Failure.**\nGemini Error: {gemini_error}\nGroq Error: {groq_error}"
 
 # --- 7. STREAMLIT APP LAYOUT ---
 st.title('🌿 S.A.G.E. | Plant Disease Classifier')
-
-# Initialize sensor_data variable
-sensor_data = None
 
 uploaded_image = st.file_uploader("Upload an image...", type=["jpg", "jpeg", "png"])
 
@@ -255,14 +270,15 @@ if uploaded_image is not None:
             # ==========================================
             # FETCH LIVE WIRELESS DATA FROM NODEMCU
             # ==========================================
-            sensor_data = get_arduino_data()
+            # Fetch data right before analysis, using the dynamic IP
+            current_sensor_data = get_arduino_data(nodemcu_ip_input)
             
             # 2. Add slight delay for UX (Optional, looks cool)
             time.sleep(0.5)
             my_bar.progress(70, text="Step 3: AI Fusing Vision + Sensors...")
 
             # 3. Get the Ultimate Fused Output from Gemini/Groq
-            final_report = get_expert_advice(prediction, conf, uploaded_image, sensor_data)
+            final_report = get_expert_advice(prediction, conf, uploaded_image, current_sensor_data)
             
             my_bar.progress(100, text="Diagnostics Complete!")
             time.sleep(0.5)
@@ -278,7 +294,7 @@ if uploaded_image is not None:
             with st.expander("⚙️ View Raw CNN & Sensor Data"):
                 st.write(f"**Raw CNN Prediction:** {prediction}")
                 st.write(f"**CNN Confidence:** {conf*100:.2f}%")
-                if sensor_data:
-                    st.json(sensor_data)
+                if current_sensor_data:
+                    st.json(current_sensor_data)
                 else:
                     st.write("No active sensor connection. Assumed standard indoor conditions.")
