@@ -1,0 +1,21 @@
+# Virtual Environments
+.venv/
+venv/
+env/
+
+# IDE Files
+.idea/
+.vscode/
+
+# Streamlit Secrets (CRITICAL)
+.streamlit/secrets.toml
+.streamlit/credentials.toml
+app/credentials.toml
+app/config.toml
+
+# Python Cache
+__pycache__/
+*.pyc
+
+# Large Model Files (Optional, but recommended if your .h5 is over 100MB)
+*.h5
