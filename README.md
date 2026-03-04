@@ -75,3 +75,13 @@ streamlit run app/main.py
 
 # Hardware Implementation Notes
 To replicate the live sensor telemetry, flash the NodeMCU/IoT.ino firmware to a standard ESP8266 board. Ensure the NodeMCU is connected to the same local Wi-Fi network as your host machine. Update the NODEMCU_IP string variable inside app/main.py to match the local IP assigned to your microcontroller.
+
+### 🔌 Pinout & Wiring Guide
+**CRITICAL:** To prevent rapid galvanic corrosion of the soil sensor, S.A.G.E. uses a **Dynamic Voltage-Switching Protocol**. The Soil Moisture and LDR sensors are *not* wired to the standard continuous 3.3V pin. They are powered by GPIO pins (`D0` and `D5`) which only turn HIGH for 100ms during active sensor polling.
+
+| Component | Component Pin | NodeMCU ESP8266 Pin | Notes |
+| :--- | :--- | :--- | :--- |
+| **SSD1306 OLED (I2C)** | VCC <br> GND <br> SCL <br> SDA | `3V3` <br> `GND` <br> `D1` (GPIO 5) <br> `D2` (GPIO 4) | Continuous 3.3V power <br> Common Ground <br> Standard I2C Clock <br> Standard I2C Data |
+| **DHT11 (Temp/Humidity)**| VCC <br> GND <br> DATA | `3V3` <br> `GND` <br> `D6` (GPIO 12) | Continuous 3.3V power <br> Common Ground <br> Safe digital reading pin |
+| **LM393 Soil Moisture**| VCC <br> GND <br> A0 (Analog) | `D0` (GPIO 16) <br> `GND` <br> `A0` (ADC0) | **Dynamic Power Pin** (Turn HIGH to read) <br> Common Ground <br> ESP8266 analog input |
+| **LM393 LDR (Light)** | VCC <br> GND <br> D0 (Digital) | `D5` (GPIO 14) <br> `GND` <br> `D7` (GPIO 13) | **Dynamic Power Pin** (Turn HIGH to read) <br> Common Ground <br> Reads HIGH/LOW threshold |
